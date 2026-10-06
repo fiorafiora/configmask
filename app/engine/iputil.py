@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 
 IPV4_RE = re.compile(
-    r"(?<![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9])"
     r"(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
     r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
-    r"(?![A-Za-z0-9_])"
+    r"(?![A-Za-z0-9])"
 )
 
 # Encryption type numbers Cisco places beside a secret.

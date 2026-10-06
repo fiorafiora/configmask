@@ -365,3 +365,65 @@ def test_subnet_entries_record_same_prefix_length():
         fake_net = parse_ipv4(entry.placeholder.split("/")[0])
         assert fake_net & host_mask == 0
         assert format_ipv4(fake_net) == entry.placeholder.split("/")[0]
+        assert entry.placeholder != entry.real
+
+
+RADIUS_EMBEDDED = """\
+radius server dnac-radius_172.21.64.10
+ address ipv4 10.0.1.10 auth-port 1812 acct-port 1813
+ timeout 4
+ retransmit 3
+ pac key 7 0725717F7E290A1600421908
+radius server other-172.21.64.10
+ address ipv4 172.21.64.10 auth-port 1812 acct-port 1813
+"""
+
+
+def test_embedded_ipv4_and_radius_pac_key():
+    mapper = Mapper()
+    sanitized = sanitize_config(RADIUS_EMBEDDED, mapper)
+    assert "172.21.64.10" not in sanitized
+    assert "10.0.1.10" not in sanitized
+    assert "0725717F7E290A1600421908" not in sanitized
+    assert "radius server dnac-radius_10.0.0.10" in sanitized
+    assert "address ipv4 10.0.2.10 auth-port 1812 acct-port 1813" in sanitized
+    assert "radius server other-10.0.0.10" in sanitized
+    assert "pac key 7 <REMOVED>" in sanitized
+    for entry in mapper.all_entries():
+        assert "0725717F7E290A1600421908" not in entry.real
+        assert "0725717F7E290A1600421908" not in entry.placeholder
+    assert mapper.by_key[("ipv4", "172.21.64.10")] == "10.0.0.10"
+    assert mapper.by_key[("ipv4", "10.0.1.10")] == "10.0.2.10"
+    assert mapper.by_key[("subnet", "10.0.1.0/24")] != "10.0.1.0/24"
+    restored = restore_text(sanitized, mapper)
+    assert restored == remove_secrets(RADIUS_EMBEDDED)
+    assert "dnac-radius_172.21.64.10" in restored
+    assert "other-172.21.64.10" in restored
+    assert "address ipv4 10.0.1.10 " in restored
+    assert "address ipv4 172.21.64.10 " in restored
+    assert "pac key 7 <REMOVED>" in restored
+
+    whole = Mapper()
+    untouched = "ip route 172.21.64.100 255.255.255.255 192.0.2.1\n"
+    masked = sanitize_config(untouched, whole)
+    assert "172.21.64.10" not in masked
+    assert whole.by_key[("ipv4", "172.21.64.100")].endswith(".100")
+    assert restore_text(masked, whole) == untouched
+
+    glued = Mapper()
+    stuck = "ip route 192.0.2.1 255.255.255.255 host172.21.64.10\n"
+    kept = sanitize_config(stuck, glued)
+    assert "host172.21.64.10" in kept
+    assert ("ipv4", "172.21.64.10") not in glued.by_key
+
+
+def test_ipv4_restore_uses_digit_boundaries():
+    mapper = Mapper()
+    mapper.load_entry("ipv4", "172.21.64.1", "10.0.0.1", 1)
+    mapper.load_entry("ipv4", "172.21.64.10", "10.0.0.10", 2)
+    mapper.load_entry("hostname", "EDGE", "HOST-001", 3)
+    mapper.load_entry("description", "closet", "DESC-001", 4)
+    text = "dnac-radius_10.0.0.10 other-10.0.0.1 HOST-001 XHOST-001 DESC-001Y\n"
+    assert restore_text(text, mapper) == (
+        "dnac-radius_172.21.64.10 other-172.21.64.1 EDGE XHOST-001 DESC-001Y\n"
+    )

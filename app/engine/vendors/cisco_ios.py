@@ -527,6 +527,7 @@ def _redact_secrets(body: str, ctx: Context) -> str:
         _handle_legacy_aaa,
         _handle_server_private,
         _handle_context_key,
+        _handle_pac_key,
         _handle_config_key,
         _handle_isakmp,
         _handle_psk,
@@ -657,6 +658,15 @@ def _handle_context_key(body: str, ctx: Context) -> str | None:
     if len(tokens) >= 2 and _bare(tokens[1]) in {"chain", "config-key"}:
         return None
     return _splice(body, _value_after(tokens, 0))
+
+
+def _handle_pac_key(body: str, ctx: Context) -> str | None:
+    if ctx.parent != "aaa_server":
+        return None
+    tokens = _tokens(body)
+    if len(tokens) < 2 or _bare(tokens[0]) != "pac" or _bare(tokens[1]) != "key":
+        return None
+    return _splice(body, _value_after(tokens, 1))
 
 
 def _handle_config_key(body: str, _ctx: Context) -> str | None:

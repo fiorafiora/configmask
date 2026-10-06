@@ -61,26 +61,30 @@ class Allocator:
         self.used.append((start, end))
         self.used.sort()
 
-    def allocate(self, prefix: int, pool_name: str) -> int:
+    def allocate(self, prefix: int, pool_name: str, *, avoid: int | None = None) -> int:
         if prefix < 8 or prefix > 30:
             raise PoolExhausted(pool_name, prefix)
         names = ("public", "public2") if pool_name == "public" else (pool_name,)
         last: PoolExhausted | None = None
         for name in names:
             try:
-                return self._allocate_in(prefix, self.pools[name])
+                return self._allocate_in(prefix, self.pools[name], avoid)
             except PoolExhausted as exc:
                 last = exc
         assert last is not None
         raise last
 
-    def _allocate_in(self, prefix: int, pool: _Pool) -> int:
+    def _allocate_in(self, prefix: int, pool: _Pool, avoid: int | None) -> int:
         block = 1 << (32 - prefix)
         if block > pool.size:
             raise PoolExhausted(pool.name, prefix)
+        blocked = None if avoid is None else avoid & ~(block - 1)
         limit = pool.base + pool.size
         cursor = _align_up(pool.base, block)
         while cursor + block <= limit:
+            if blocked is not None and cursor == blocked:
+                cursor = _align_up(cursor + block, block)
+                continue
             conflict_end: int | None = None
             for start, end in self.used:
                 if cursor + block <= start:

@@ -125,7 +125,7 @@ class Mapper:
         if found is not None:
             return found
         pool = "private" if is_rfc1918(network) else "public"
-        fake = self.allocator.allocate(prefix, pool)
+        fake = self.allocator.allocate(prefix, pool, avoid=network)
         real_s = f"{format_ipv4(network)}/{prefix}"
         fake_s = f"{format_ipv4(fake)}/{prefix}"
         self._bind("subnet", real_s, fake_s, dirty=True)

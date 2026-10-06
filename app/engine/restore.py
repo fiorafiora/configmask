@@ -14,10 +14,12 @@ def restore_text(text: str, mapper: Mapper) -> str:
     items = sorted(mapper.by_placeholder.items(), key=lambda item: len(item[0]), reverse=True)
     lookup: dict[str, str] = {}
     parts: list[str] = []
-    for placeholder, (_type, real) in items:
-        parts.append(
-            r"(?<![A-Za-z0-9_-])" + re.escape(placeholder) + r"(?![A-Za-z0-9_-])"
-        )
+    for placeholder, (type_, real) in items:
+        if type_ == "ipv4":
+            left, right = r"(?<![0-9])", r"(?![0-9])"
+        else:
+            left, right = r"(?<![A-Za-z0-9_-])", r"(?![A-Za-z0-9_-])"
+        parts.append(left + re.escape(placeholder) + right)
         lookup[placeholder] = real
     pattern = re.compile("|".join(parts))
 
