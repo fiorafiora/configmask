@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in · ConfigMask{% endblock %}
+{% block body %}
+<section class="panel narrow">
+  <p class="kicker">On this machine only</p>
+  <h1>Sign in to unmask a configuration.</h1>
+  <p class="lede">ConfigMask strips client identifiers before a config leaves the VM, then puts the real values back after you have an edited copy. The mapping never needs a network connection.</p>
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <label for="password">Admin password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Enter</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ session.job_code }} sanitized · ConfigMask{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker"><a href="/sessions/{{ session.id }}">{{ session.job_code }}</a>{% if session.description %} · {{ session.description }}{% endif %}</p>
+    <h1>{{ config.label or config.filename }}</h1>
+    <p class="lede">{{ removed }} secret{{ "s" if removed != 1 else "" }} removed. This is the file that may leave the VM.</p>
+  </div>
+  <div class="card-actions">
+    <a class="button" href="/sessions/{{ session.id }}/configs/{{ config.id }}/download?which=sanitized">Download sanitized</a>
+    <button type="button" class="button secondary" data-copy="sanitized-text">Copy</button>
+    <a class="button ghost" href="/sessions/{{ session.id }}/configs/{{ config.id }}/download?which=original">Download original</a>
+  </div>
+</div>
+<section class="panel">
+  <label for="sanitized-text">Sanitized configuration</label>
+  <textarea id="sanitized-text" class="config" readonly rows="24" spellcheck="false" wrap="off">{{ config.sanitized }}</textarea>
+  <p class="hint">Tokens such as HOST-001 and DESC-001 stand in for names. &lt;REMOVED&gt; is a secret that was dropped and will not come back on restore.</p>
+</section>
+{% endblock %}

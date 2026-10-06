@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ session.job_code }} · ConfigMask{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker"><a href="/">Sessions</a> · {{ vendor_label }}</p>
+    <h1>{{ session.job_code }}</h1>
+    {% if session.description %}<p class="purpose">{{ session.description }}</p>{% endif %}
+    <p class="lede">Opened {{ session.created_at }}. Upload each device in this job before you share anything. Download only the sanitized file.</p>
+  </div>
+  <div class="card-actions">
+    <a class="button" href="/sessions/{{ session.id }}/restore">Restore an edit</a>
+    <form method="post" action="/sessions/{{ session.id }}/delete" data-confirm="Delete {{ session.job_code }}? This wipes the mapping table and every stored config.">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="danger">Delete session</button>
+    </form>
+  </div>
+</div>
+
+<form method="post" action="/sessions/{{ session.id }}/description" class="panel stack description-edit">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="description">Description</label>
+  <input id="description" name="description" type="text" required maxlength="160" value="{{ session.description }}">
+  <button type="submit">Save description</button>
+  <p class="hint">Customer or change. This stays on this VM and is stored encrypted.</p>
+</form>
+
+<section class="split">
+  <form method="post" action="/sessions/{{ session.id }}/keywords" class="panel stack" data-busy>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <h2>Keyword list</h2>
+    <p class="hint">Client name, site names, project codes. One per line. Matching is case-insensitive and applies to the next upload. Already-sanitized files stay as they were.</p>
+    <label class="sr-only" for="keywords">Keywords</label>
+    <textarea id="keywords" name="keywords" rows="8" spellcheck="false">{{ keyword_text }}</textarea>
+    <button type="submit" data-busy-label="Saving…">Save keywords</button>
+  </form>
+
+  <form method="post" action="/sessions/{{ session.id }}/sanitize" class="panel stack" enctype="multipart/form-data" data-busy>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <h2>Sanitize a config</h2>
+    <label for="label">Device label</label>
+    <input id="label" name="label" type="text" maxlength="60" placeholder="Cedar ISR" autocomplete="off">
+    <label for="config_file">Configuration file</label>
+    <input id="config_file" name="config_file" type="file" accept=".cfg,.txt,.text,text/plain">
+    <label for="config_text">Or paste <code>show running-config</code></label>
+    <textarea id="config_text" name="config_text" rows="12" spellcheck="false" wrap="off" placeholder="hostname …"></textarea>
+    <button type="submit" data-busy-label="Sanitizing…">Sanitize</button>
+    <p class="hint">Limit 10 MB. Secrets become &lt;REMOVED&gt; and are not stored. RFC 1918 addresses move into 10.0.0.0/8. Other unicast addresses move into 198.18.0.0/15.</p>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Stored configs</h2>
+  {% if not configs %}
+  <p class="empty-copy">Nothing uploaded yet. The original and the sanitized copy are both kept, encrypted, so you can diff a restore days later.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Device</th><th>File</th><th>Size</th><th>Stored</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for config in configs %}
+        <tr>
+          <td>{{ config.label or "—" }}</td>
+          <td>{{ config.filename }}</td>
+          <td>{{ config.byte_size }} B</td>
+          <td>{{ config.created_at }}</td>
+          <td class="actions"><a href="/sessions/{{ session.id }}/configs/{{ config.id }}">Sanitized</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <h2>Mapping table</h2>
+    <label class="filter">Filter
+      <input id="mapping-filter" type="search" placeholder="HOST, 10.0, DESC…" autocomplete="off">
+    </label>
+  </div>
+  {% if not mappings %}
+  <p class="empty-copy">The table fills in as you upload. It is what restore uses, including next week.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Real value</th><th>Stand-in</th></tr>
+      </thead>
+      <tbody>
+        {% for row in mappings %}
+        <tr data-mapping-row data-search="{{ row.type_label }} {{ row.real }} {{ row.placeholder }}">
+          <td>{{ row.type_label }}</td>
+          <td><code>{{ row.real }}</code></td>
+          <td><code>{{ row.placeholder }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

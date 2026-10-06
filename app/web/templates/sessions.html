@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Sessions · ConfigMask{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker">Jobs</p>
+    <h1>One mapping table per change.</h1>
+    <p class="lede">Describe the customer or change. ConfigMask assigns the next job code, then keeps one mapping table for every router and switch in that job.</p>
+  </div>
+</div>
+
+<form method="post" action="/sessions" class="panel new-session">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="vendor" value="cisco_ios">
+  <div class="new-session-head">
+    <h2>New session</h2>
+    <p class="hint">The job code is assigned automatically, for example JOB-0007.</p>
+  </div>
+  <div class="new-session-row">
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text" required maxlength="160" placeholder="Which customer or change this is" autocomplete="off">
+    <button type="submit">Create</button>
+  </div>
+  <p class="hint ruleset">Ruleset: Cisco IOS / IOS-XE. FortiOS can be added as a vendor module later.</p>
+</form>
+
+{% if not sessions %}
+<section class="panel empty">
+  <h2>No sessions yet</h2>
+  <p>Write who or what this job is for. Deleting a session later wipes its mapping and every stored config.</p>
+</section>
+{% else %}
+<ul class="session-list">
+  {% for session in sessions %}
+  <li class="panel session-card">
+    <div>
+      <p class="kicker">{{ session.vendor_label }}</p>
+      <h2><a href="/sessions/{{ session.id }}">{{ session.job_code }}</a></h2>
+      {% if session.description %}<p class="purpose">{{ session.description }}</p>{% endif %}
+      <p class="meta">Opened {{ session.created_at }} · {{ session.mapping_count }} mapping{{ "s" if session.mapping_count != 1 else "" }} · {{ session.config_count }} config{{ "s" if session.config_count != 1 else "" }}</p>
+    </div>
+    <div class="card-actions">
+      <a class="button" href="/sessions/{{ session.id }}">Open</a>
+      <form method="post" action="/sessions/{{ session.id }}/delete" data-confirm="Delete {{ session.job_code }}? This wipes the mapping table and every stored config. Restore will no longer be possible.">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf" content="{{ csrf }}">
+  <title>{% block title %}ConfigMask{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="brand-name">ConfigMask</span>
+    </a>
+    {% if user %}
+    <nav class="nav">
+      <a href="/">Sessions</a>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="linkish">Log out</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% if error %}<p class="banner error" role="alert">{{ error }}</p>{% endif %}
+    {% if notice %}<p class="banner notice" role="status">{{ notice }}</p>{% endif %}
+    {% block body %}{% endblock %}
+  </main>
+  <footer>
+    <p>Mappings and originals stay in the local database. Put this service behind an HTTPS proxy and do not publish it to the internet.</p>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

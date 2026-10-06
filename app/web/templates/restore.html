@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Restore {{ session.job_code }} · ConfigMask{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <p class="kicker"><a href="/sessions/{{ session.id }}">{{ session.job_code }}</a>{% if session.description %} · {{ session.description }}{% endif %} · {{ vendor_label }}</p>
+    <h1>Put the real values back.</h1>
+    <p class="lede">Paste the edited stand-in config. Review every warning and the diff before this touches a production device.</p>
+  </div>
+</div>
+
+<form method="post" action="/sessions/{{ session.id }}/restore" class="panel stack" enctype="multipart/form-data" data-busy>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="compare_config_id">Diff against an original in this session</label>
+  <select id="compare_config_id" name="compare_config_id">
+    <option value="">No original — warnings only</option>
+    {% for config in configs %}
+    <option value="{{ config.id }}">{{ config.label or config.filename }} · {{ config.created_at }}</option>
+    {% endfor %}
+  </select>
+  <label for="config_file">Edited file</label>
+  <input id="config_file" name="config_file" type="file" accept=".cfg,.txt,.text,text/plain">
+  <label for="config_text">Or paste the edited config</label>
+  <textarea id="config_text" name="config_text" rows="14" spellcheck="false" wrap="off"></textarea>
+  <button type="submit" data-busy-label="Restoring…">Restore</button>
+</form>
+
+{% if result %}
+<section class="panel">
+  <div class="section-head">
+    <h2>Restored configuration</h2>
+    <div class="card-actions">
+      <a class="button" href="/sessions/{{ session.id }}/restores/{{ result.id }}/download">Download restored</a>
+      <button type="button" class="button secondary" data-copy="restored-text">Copy</button>
+    </div>
+  </div>
+  <textarea id="restored-text" class="config" readonly rows="18" spellcheck="false" wrap="off">{{ result.text }}</textarea>
+</section>
+
+<section class="panel">
+  <h2>Warnings</h2>
+  {% if not result.issues %}
+  <p class="empty-copy">No stand-in problems and no removed secrets in the edited file.</p>
+  {% else %}
+  <ul class="stat-row">
+    {% for code, count in result.summary.items() %}
+    <li><strong>{{ count }}</strong> {{ code.replace("_", " ") }}</li>
+    {% endfor %}
+  </ul>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Line</th><th>What to check</th></tr>
+      </thead>
+      <tbody>
+        {% for issue in result.issues %}
+        <tr class="issue-{{ issue.code }}">
+          <td>{{ issue.line }}</td>
+          <td>
+            <p>{{ issue.message }}</p>
+            <code class="excerpt">{{ issue.excerpt }}</code>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Diff</h2>
+  {% if not result.has_original %}
+  <p class="empty-copy">No original was selected, so there is nothing to compare. The restored text is still above.</p>
+  {% else %}
+  <p class="hint">Original: {{ result.compare_label }}. {{ result.diff_stats.changed }} changed, {{ result.diff_stats.added }} added, {{ result.diff_stats.removed }} removed. Secret lines stay different because those values were not kept.</p>
+  <div class="diff" role="table">
+    <div class="diff-head" role="row">
+      <div>Original</div>
+      <div>Restored</div>
+    </div>
+    {% for row in result.diff_rows %}
+    <div class="diff-row {{ row.kind }}" role="row">
+      <div><span class="ln">{{ row.left_no or "" }}</span><code>{{ row.left }}</code></div>
+      <div><span class="ln">{{ row.right_no or "" }}</span><code>{{ row.right }}</code></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if restores %}
+<section class="panel">
+  <h2>Recent restores</h2>
+  <ul class="plain-list">
+    {% for item in restores %}
+    <li><a href="/sessions/{{ session.id }}/restores/{{ item.id }}">Restore {{ item.id }}</a> · {{ item.created_at }} · {{ item.byte_size }} B</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}
