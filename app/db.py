@@ -94,6 +94,14 @@ def init_db(path: str) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "description_enc" not in columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN description_enc BLOB")
+        if "subnet_rules_enc" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN subnet_rules_enc BLOB")
+        mapping_columns = {row[1] for row in conn.execute("PRAGMA table_info(mappings)")}
+        if "config_id" not in mapping_columns:
+            conn.execute("ALTER TABLE mappings ADD COLUMN config_id INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mappings_config ON mappings(config_id, seq)"
+        )
 
 
 def create_session(path: str, vault: Vault, description: str, vendor: str = "cisco_ios") -> tuple[int, str]:
@@ -176,6 +184,52 @@ def save_keywords(path: str, vault: Vault, session_id: int, keywords: list[str])
         conn.execute("UPDATE sessions SET keywords_enc = ? WHERE id = ?", (payload, session_id))
 
 
+def load_subnet_settings(vault: Vault, row: dict) -> tuple[bool, list[tuple[str, str]]]:
+    blob = row.get("subnet_rules_enc")
+    if not blob:
+        return False, []
+    data = json.loads(vault.decrypt(blob))
+    if isinstance(data, list):
+        return False, _rule_pairs(data)
+    if not isinstance(data, dict):
+        return False, []
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+    return bool(data.get("keep_ips")), _rule_pairs(rules)
+
+
+def _rule_pairs(data: list) -> list[tuple[str, str]]:
+    rules = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        real = str(item.get("real") or "")
+        stand_in = str(item.get("stand_in") or "")
+        if real and stand_in:
+            rules.append((real, stand_in))
+    return rules
+
+
+def save_subnet_rules(
+    path: str,
+    vault: Vault,
+    session_id: int,
+    rules: list[tuple[str, str]],
+    keep_ips: bool,
+) -> None:
+    payload = vault.encrypt(
+        json.dumps(
+            {
+                "keep_ips": keep_ips,
+                "rules": [{"real": real, "stand_in": stand_in} for real, stand_in in rules],
+            }
+        )
+    )
+    with connect(path) as conn:
+        conn.execute("UPDATE sessions SET subnet_rules_enc = ? WHERE id = ?", (payload, session_id))
+
+
 def delete_session(path: str, session_id: int) -> bool:
     with connect(path) as conn:
         conn.execute("DELETE FROM restores WHERE session_id = ?", (session_id,))
@@ -199,13 +253,49 @@ def counts_for_session(path: str, session_id: int) -> dict[str, int]:
     return {"mappings": int(mappings), "configs": int(configs), "restores": int(restores)}
 
 
-def load_mapper(path: str, vault: Vault, session_id: int, keywords: list[str]) -> Mapper:
-    mapper = Mapper(keywords=list(keywords))
+def seed_session_subnets(path: str, vault: Vault, session_id: int, mapper: Mapper) -> None:
+    """Carry subnet stand-ins from earlier devices into a new upload."""
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT seq, type, real_enc, placeholder_enc FROM mappings WHERE session_id = ? ORDER BY seq",
+            """
+            SELECT real_enc, placeholder_enc
+            FROM mappings
+            WHERE session_id = ? AND type = 'subnet'
+            ORDER BY id
+            """,
             (session_id,),
         ).fetchall()
+    for row in rows:
+        mapper.note_subnet(vault.decrypt(row["real_enc"]), vault.decrypt(row["placeholder_enc"]))
+
+
+def load_mapper(
+    path: str,
+    vault: Vault,
+    session_id: int,
+    keywords: list[str],
+    config_id: int | None = None,
+) -> Mapper:
+    """Load one device table. Older rows with no device fall back only when that device has none."""
+    mapper = Mapper(keywords=list(keywords))
+    with connect(path) as conn:
+        rows = []
+        if config_id is not None:
+            rows = conn.execute(
+                """
+                SELECT seq, type, real_enc, placeholder_enc
+                FROM mappings WHERE session_id = ? AND config_id = ? ORDER BY seq
+                """,
+                (session_id, config_id),
+            ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    """
+                    SELECT seq, type, real_enc, placeholder_enc
+                    FROM mappings WHERE session_id = ? AND config_id IS NULL ORDER BY seq
+                    """,
+                    (session_id,),
+                ).fetchall()
     for row in rows:
         mapper.load_entry(
             row["type"],
@@ -216,19 +306,26 @@ def load_mapper(path: str, vault: Vault, session_id: int, keywords: list[str]) -
     return mapper
 
 
-def save_mapper_entries(path: str, vault: Vault, session_id: int, mapper: Mapper) -> int:
+def save_mapper_entries(
+    path: str,
+    vault: Vault,
+    session_id: int,
+    mapper: Mapper,
+    config_id: int,
+) -> int:
     fresh = mapper.new_entries()
     if not fresh:
         return 0
     with connect(path) as conn:
         conn.executemany(
             """
-            INSERT INTO mappings (session_id, seq, type, real_enc, placeholder_enc)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO mappings (session_id, config_id, seq, type, real_enc, placeholder_enc)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     session_id,
+                    config_id,
                     entry.seq,
                     entry.type,
                     vault.encrypt(entry.real),
@@ -300,13 +397,17 @@ def get_config(path: str, vault: Vault, session_id: int, config_id: int) -> dict
 def list_mapping_rows(path: str, vault: Vault, session_id: int) -> list[dict]:
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT seq, type, real_enc, placeholder_enc FROM mappings WHERE session_id = ? ORDER BY seq",
+            """
+            SELECT config_id, seq, type, real_enc, placeholder_enc
+            FROM mappings WHERE session_id = ? ORDER BY config_id, seq
+            """,
             (session_id,),
         ).fetchall()
     result = []
     for row in rows:
         result.append(
             {
+                "config_id": row["config_id"],
                 "seq": row["seq"],
                 "type": row["type"],
                 "real": vault.decrypt(row["real_enc"]),

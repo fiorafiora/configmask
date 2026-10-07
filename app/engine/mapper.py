@@ -1,7 +1,8 @@
-"""Session mapping table.
+"""Mapping table for one device.
 
-One mapper is shared by every configuration in a session so a real address
-or name always becomes the same stand-in, including across devices.
+Subnet stand-ins can be seeded from the rest of the session so the same
+real network keeps the same stand-in. Hostnames and descriptions stay local
+to this device.
 """
 
 from __future__ import annotations
@@ -75,6 +76,9 @@ class Mapper:
     token_by_real: dict[str, str] = field(default_factory=dict)
     keyword_cf: dict[str, str] = field(default_factory=dict)
     subnets: dict[tuple[int, int], int] = field(default_factory=dict)
+    prior_subnets: dict[tuple[int, int], int] = field(default_factory=dict)
+    exact_ips: dict[int, int] = field(default_factory=dict)
+    keep_ips: bool = False
     counters: dict[str, int] = field(default_factory=dict)
     next_seq: int = 1
     allocator: Allocator = field(default_factory=Allocator)
@@ -118,15 +122,55 @@ class Mapper:
         self._bind("keyword", matched, placeholder, dirty=True)
         return placeholder
 
+    def note_subnet(self, real: str, placeholder: str) -> None:
+        """Remember a subnet stand-in from an earlier device without copying it yet.
+
+        The first assignment wins. A later row that gave the same network a
+        different stand-in keeps its block reserved so a new network cannot
+        reuse that stand-in.
+        """
+        parsed = _parse_subnet_pair(real, placeholder)
+        if parsed is None:
+            return
+        network, prefix, fake = parsed
+        known = self.prior_subnets.get((network, prefix))
+        if known is None and (network, prefix) in self.subnets:
+            known = self.subnets[(network, prefix)]
+        if known is not None:
+            if known != fake:
+                self._reserve_quiet(fake, prefix)
+            return
+        if not self._reserve_quiet(fake, prefix):
+            return
+        self.prior_subnets[(network, prefix)] = fake
+
+    def note_host(self, real: str, stand_in: str) -> None:
+        """Replace one address with the stand-in the operator typed."""
+        self.exact_ips[parse_ipv4(real.split("/")[0])] = parse_ipv4(stand_in.split("/")[0])
+
+    def activate_listed_subnets(self) -> None:
+        """Make operator-chosen networks visible before automatic discovery."""
+        for (network, prefix), fake in list(self.prior_subnets.items()):
+            if (network, prefix) in self.subnets:
+                continue
+            real_s = f"{format_ipv4(network)}/{prefix}"
+            self._bind("subnet", real_s, f"{format_ipv4(fake)}/{prefix}", dirty=False)
+
     def ensure_subnet(self, network: int, prefix: int) -> int:
         mask = prefix_to_mask(prefix)
         network &= mask
         found = self.subnets.get((network, prefix))
         if found is not None:
             return found
+        real_s = f"{format_ipv4(network)}/{prefix}"
+        prior = self.prior_subnets.get((network, prefix))
+        if prior is not None:
+            self._bind("subnet", real_s, f"{format_ipv4(prior)}/{prefix}", dirty=True)
+            return prior
+        if self.keep_ips:
+            return network
         pool = "private" if is_rfc1918(network) else "public"
         fake = self.allocator.allocate(prefix, pool, avoid=network)
-        real_s = f"{format_ipv4(network)}/{prefix}"
         fake_s = f"{format_ipv4(fake)}/{prefix}"
         self._bind("subnet", real_s, fake_s, dirty=True)
         return fake
@@ -135,23 +179,38 @@ class Mapper:
         ip = parse_ipv4(ip_text)
         if is_exempt(ip):
             return ip_text
+        forced = self.exact_ips.get(ip)
+        if forced is not None:
+            return self._bind_ipv4(ip_text, format_ipv4(forced))
         match = self._longest(ip)
         if match is None:
+            if self.keep_ips:
+                return ip_text
             network = ip & 0xFFFFFF00
             fake_net = self.ensure_subnet(network, 24)
             prefix = 24
         else:
-            _network, prefix, fake_net = match
+            network, prefix, fake_net = match
+            self._mark_subnet(network, prefix)
         host_mask = (1 << (32 - prefix)) - 1 if prefix < 32 else 0
         if fake_net & host_mask:
             raise MappingCollision("stand-in network is not aligned to its prefix")
         fake_ip = fake_net | (ip & host_mask)
-        fake_text = format_ipv4(fake_ip)
+        return self._bind_ipv4(ip_text, format_ipv4(fake_ip))
+
+    def _bind_ipv4(self, ip_text: str, fake_text: str) -> str:
         key = ("ipv4", ip_text)
         if key in self.by_key:
             return self.by_key[key]
         self._bind("ipv4", ip_text, fake_text, dirty=True)
         return fake_text
+
+    def _mark_subnet(self, network: int, prefix: int) -> None:
+        real_s = f"{format_ipv4(network)}/{prefix}"
+        for entry in self.entries:
+            if entry.type == "subnet" and entry.real == real_s:
+                entry.dirty = True
+                return
 
     def _longest(self, ip: int) -> tuple[int, int, int] | None:
         best: tuple[int, int, int] | None = None
@@ -203,6 +262,13 @@ class Mapper:
             self._index_subnet(real, placeholder)
         return placeholder
 
+    def _reserve_quiet(self, start: int, prefix: int) -> bool:
+        try:
+            self.allocator.reserve(start, prefix)
+        except MappingCollision:
+            return False
+        return True
+
     def _index_subnet(self, real: str, placeholder: str) -> None:
         real_ip, real_prefix = real.split("/")
         fake_ip, fake_prefix = placeholder.split("/")
@@ -226,3 +292,20 @@ class Mapper:
             match = re.fullmatch(rf"{re.escape(prefix)}-(\d+)", placeholder)
         if match:
             self.counters[type_] = max(self.counters.get(type_, 0), int(match.group(1)))
+
+
+def _parse_subnet_pair(real: str, placeholder: str) -> tuple[int, int, int] | None:
+    try:
+        real_ip, real_prefix = real.split("/")
+        fake_ip, fake_prefix = placeholder.split("/")
+        prefix = int(real_prefix)
+        if int(fake_prefix) != prefix or not 0 <= prefix <= 32:
+            return None
+        network = parse_ipv4(real_ip) & prefix_to_mask(prefix)
+        fake = parse_ipv4(fake_ip)
+    except (TypeError, ValueError):
+        return None
+    host_mask = (1 << (32 - prefix)) - 1 if prefix < 32 else 0
+    if fake & host_mask:
+        return None
+    return network, prefix, fake

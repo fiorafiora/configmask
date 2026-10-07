@@ -22,12 +22,16 @@ from app.db import (
     list_sessions,
     load_keywords,
     load_mapper,
+    load_subnet_settings,
     read_description,
     save_keywords,
+    save_subnet_rules,
     update_description,
 )
+from app.engine.mapper import Mapper
 from app.engine.registry import UnknownVendor, get_vendor
 from app.keywords import parse_keywords
+from app.subnets import parse_subnet_rules
 from app.services import (
     ConfigError,
     build_restore,
@@ -50,6 +54,7 @@ _ERRORS = {
     "too_large": "That configuration is over the upload limit.",
     "csrf": "The form expired. Refresh the page and try again.",
     "keywords": "A keyword was rejected. Use a client or site name, at least 3 characters, not an IOS command.",
+    "subnets": "A replacement was rejected. Use a network with the same prefix on both sides, or one address on both sides.",
     "pool": "The stand-in address pools cannot fit a network in this configuration.",
     "missing": "That session or file is no longer here.",
     "vendor": "That ruleset is not available.",
@@ -58,8 +63,10 @@ _NOTICES = {
     "created": "Session opened. The job code is assigned. Add site keywords, then upload each device.",
     "description": "Description saved.",
     "keywords": "Keyword list saved. It applies to the next upload.",
+    "subnets": "Subnet replacements saved. They apply to the next upload.",
     "deleted": "Session deleted. Its mapping and stored configs are gone.",
     "sanitized": "Sanitized copy is ready. Share only this file.",
+    "sanitized_many": "Sanitized every dropped file. Download each copy from the list below.",
 }
 
 
@@ -125,6 +132,23 @@ def _login_redirect(request: Request) -> RedirectResponse:
     return RedirectResponse(f"/login?next={quote(_safe_next(request.url.path))}", status_code=303)
 
 
+async def _uploaded_configs(request: Request, form) -> list[tuple[str, str]]:
+    settings = request.app.state.settings
+    found: list[tuple[str, str]] = []
+    for upload in form.getlist("config_file"):
+        filename = getattr(upload, "filename", "") or ""
+        if not filename:
+            continue
+        data = await upload.read()
+        if not data.strip():
+            continue
+        text = decode_config(data, settings.max_upload_bytes)
+        if not text.strip():
+            continue
+        found.append((text, safe_filename(filename)))
+    return found
+
+
 async def _payload(request: Request, form) -> tuple[str, str]:
     settings = request.app.state.settings
     upload = form.get("config_file")
@@ -153,7 +177,8 @@ def _too_big(request: Request) -> bool:
         size = int(raw)
     except ValueError:
         return False
-    return size > request.app.state.settings.max_upload_bytes + 65536
+    # One request may carry a batch of configs. Each file is still capped on its own.
+    return size > request.app.state.settings.max_upload_bytes * 20 + 65536
 
 
 @router.get("/health")
@@ -297,6 +322,32 @@ async def session_keywords(request: Request, session_id: int):
     return RedirectResponse(f"/sessions/{session_id}?notice=keywords", status_code=303)
 
 
+@router.post("/sessions/{session_id}/subnets")
+async def session_subnets(request: Request, session_id: int):
+    if not _logged_in(request):
+        return _login_redirect(request)
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return RedirectResponse(f"/sessions/{session_id}?error=csrf", status_code=303)
+    row = get_session_row(request.app.state.settings.db_path, session_id)
+    if row is None:
+        return _render(request, "error.html", status_code=404, heading="Session not found", detail="")
+    accepted, ok = parse_subnet_rules(
+        [str(item) for item in form.getlist("real_subnet")],
+        [str(item) for item in form.getlist("stand_in")],
+    )
+    if not ok:
+        return RedirectResponse(f"/sessions/{session_id}?error=subnets", status_code=303)
+    save_subnet_rules(
+        request.app.state.settings.db_path,
+        request.app.state.vault,
+        session_id,
+        accepted,
+        str(form.get("keep_ips") or "") == "1",
+    )
+    return RedirectResponse(f"/sessions/{session_id}?notice=subnets", status_code=303)
+
+
 @router.post("/sessions/{session_id}/sanitize")
 async def session_sanitize(request: Request, session_id: int):
     if not _logged_in(request):
@@ -306,19 +357,51 @@ async def session_sanitize(request: Request, session_id: int):
     form = await request.form()
     if not _csrf_ok(request, form):
         return RedirectResponse(f"/sessions/{session_id}?error=csrf", status_code=303)
-    try:
-        text, filename = await _payload(request, form)
-        config_id = sanitize_upload(
-            request.app.state.settings,
+    if str(form.get("subnet_settings") or "") == "1":
+        accepted, ok = parse_subnet_rules(
+            [str(item) for item in form.getlist("real_subnet")],
+            [str(item) for item in form.getlist("stand_in")],
+        )
+        if not ok:
+            return RedirectResponse(f"/sessions/{session_id}?error=subnets", status_code=303)
+        save_subnet_rules(
+            request.app.state.settings.db_path,
             request.app.state.vault,
             session_id,
-            text,
-            filename=filename,
-            label=safe_label(str(form.get("label") or "")),
+            accepted,
+            str(form.get("keep_ips") or "") == "1",
         )
+    try:
+        uploads = await _uploaded_configs(request, form)
+        if uploads:
+            typed = safe_label(str(form.get("label") or ""))
+            config_id = 0
+            for text, filename in uploads:
+                label = typed if len(uploads) == 1 else safe_label(Path(filename).stem) or filename
+                config_id = sanitize_upload(
+                    request.app.state.settings,
+                    request.app.state.vault,
+                    session_id,
+                    text,
+                    filename=filename,
+                    label=label,
+                )
+        else:
+            text, filename = await _payload(request, form)
+            config_id = sanitize_upload(
+                request.app.state.settings,
+                request.app.state.vault,
+                session_id,
+                text,
+                filename=filename,
+                label=safe_label(str(form.get("label") or "")),
+            )
+            uploads = [(text, filename)]
     except ConfigError as exc:
         return RedirectResponse(f"/sessions/{session_id}?error={exc.code}", status_code=303)
-    return RedirectResponse(f"/sessions/{session_id}/configs/{config_id}?notice=sanitized", status_code=303)
+    if len(uploads) == 1:
+        return RedirectResponse(f"/sessions/{session_id}/configs/{config_id}?notice=sanitized", status_code=303)
+    return RedirectResponse(f"/sessions/{session_id}?notice=sanitized_many", status_code=303)
 
 
 @router.get("/sessions/{session_id}/configs/{config_id}")
@@ -423,7 +506,16 @@ def restore_detail(request: Request, session_id: int, restore_id: int):
             original = config["original"]
             compare_label = config["label"] or config["filename"]
     keywords = load_keywords(request.app.state.vault, row)
-    mapper = load_mapper(request.app.state.settings.db_path, request.app.state.vault, session_id, keywords)
+    if compare_id:
+        mapper = load_mapper(
+            request.app.state.settings.db_path,
+            request.app.state.vault,
+            session_id,
+            keywords,
+            int(compare_id),
+        )
+    else:
+        mapper = Mapper(keywords=keywords)
     issues, summary, diff_rows, diff_stats = review_restore(
         stored["edited"], stored["restored"], original, row["vendor"], mapper
     )
@@ -470,6 +562,23 @@ def restore_download(request: Request, session_id: int, restore_id: int):
     )
 
 
+def _mapping_groups(mappings: list[dict], configs: list[dict]) -> list[dict]:
+    by_config: dict[int | None, list[dict]] = {}
+    for item in mappings:
+        by_config.setdefault(item.get("config_id"), []).append(item)
+    groups = []
+    for config in sorted(configs, key=lambda item: item["id"]):
+        rows = by_config.pop(config["id"], None)
+        if not rows:
+            continue
+        title = config["label"] or config["filename"]
+        groups.append({"title": title, "device": title, "rows": rows})
+    earlier = by_config.pop(None, None)
+    if earlier:
+        groups.append({"title": "Earlier uploads", "device": "earlier", "rows": earlier})
+    return groups
+
+
 def _session_page(request: Request, session_id: int):
     row = _show_session(
         request.app.state.vault,
@@ -478,10 +587,13 @@ def _session_page(request: Request, session_id: int):
     if row is None:
         return None
     keywords = load_keywords(request.app.state.vault, row)
+    keep_ips, stored_rules = load_subnet_settings(request.app.state.vault, row)
+    subnet_rules = [{"real": real, "stand_in": stand_in} for real, stand_in in stored_rules]
     mappings = list_mapping_rows(request.app.state.settings.db_path, request.app.state.vault, session_id)
     for item in mappings:
         item["type_label"] = type_label(item["type"])
     configs = list_configs(request.app.state.settings.db_path, session_id)
+    mapping_groups = _mapping_groups(mappings, configs)
     try:
         vendor_label = get_vendor(row["vendor"]).label
     except UnknownVendor:
@@ -493,7 +605,9 @@ def _session_page(request: Request, session_id: int):
         vendor_label=vendor_label,
         keywords=keywords,
         keyword_text="\n".join(keywords),
-        mappings=mappings,
+        subnet_rules=subnet_rules,
+        keep_ips=keep_ips,
+        mapping_groups=mapping_groups,
         configs=configs,
     )
 

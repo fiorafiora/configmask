@@ -64,6 +64,8 @@ _TOP_PARENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)^route-map\s+\S+"), "route_map"),
     (re.compile(r"(?i)^crypto\s+dynamic-map\s+\S+"), "crypto_map"),
     (re.compile(r"(?i)^crypto\s+map\s+\S+"), "crypto_map"),
+    (re.compile(r"(?i)^class-map\b"), "class_map"),
+    (re.compile(r"(?i)^policy-map\b"), "policy_map"),
 ]
 
 _NAME_RULES: list[tuple[re.Pattern[str], str]] = [
@@ -421,6 +423,8 @@ def _full_field(body: str, ctx: Context, mapper: Mapper) -> str | None:
     for pattern, kind in _FULL_FIELDS:
         match = pattern.match(body)
         if match:
+            if kind == "description" and ctx.parent in {"class_map", "policy_map"}:
+                return body
             return match.group(1) + mapper.map_value(kind, match.group(2))
     if ctx.parent == "vlan":
         match = re.match(r"(?i)^(\s*name\s+)(\S+)(\s*)$", body)

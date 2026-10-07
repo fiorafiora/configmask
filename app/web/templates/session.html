@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ session.job_code }} · ConfigMask{% endblock %}
 {% block body %}
-<div class="page-head">
+<div class="page-head session-head">
   <div>
     <p class="kicker"><a href="/">Sessions</a> · {{ vendor_label }}</p>
     <h1>{{ session.job_code }}</h1>
@@ -17,39 +17,81 @@
   </div>
 </div>
 
-<form method="post" action="/sessions/{{ session.id }}/description" class="panel stack description-edit">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
-  <label for="description">Description</label>
-  <input id="description" name="description" type="text" required maxlength="160" value="{{ session.description }}">
-  <button type="submit">Save description</button>
-  <p class="hint">Customer or change. This stays on this VM and is stored encrypted.</p>
-</form>
+<div class="workspace">
+  <aside class="rail">
+    <form method="post" action="/sessions/{{ session.id }}/description" class="panel stack description-edit">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="description">Description</label>
+      <input id="description" name="description" type="text" required maxlength="160" value="{{ session.description }}">
+      <button type="submit">Save description</button>
+      <p class="hint">Customer or change. This stays on this VM and is stored encrypted.</p>
+    </form>
 
-<section class="split">
-  <form method="post" action="/sessions/{{ session.id }}/keywords" class="panel stack" data-busy>
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <h2>Keyword list</h2>
-    <p class="hint">Client name, site names, project codes. One per line. Matching is case-insensitive and applies to the next upload. Already-sanitized files stay as they were.</p>
-    <label class="sr-only" for="keywords">Keywords</label>
-    <textarea id="keywords" name="keywords" rows="8" spellcheck="false">{{ keyword_text }}</textarea>
-    <button type="submit" data-busy-label="Saving…">Save keywords</button>
-  </form>
+    <form method="post" action="/sessions/{{ session.id }}/subnets" class="panel stack" data-subnet-form>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <h2>Subnet replacements</h2>
+      <label class="check">
+        <input type="checkbox" name="keep_ips" value="1"{% if keep_ips %} checked{% endif %}>
+        Do not replace IP addresses
+      </label>
+      <p class="hint">Check this, then press Sanitize. Addresses stay as written unless a row below names one to rewrite. Leave it unchecked and every address is rewritten; a row overrides that network or address. Sanitize uses the checkbox and rows on this page, so you do not have to press Save subnets first. Already-sanitized files stay as they were.</p>
+      <div class="subnet-head" aria-hidden="true"><span>Original network</span><span>Stand-in network</span></div>
+      <div data-subnet-list>
+        {% for rule in subnet_rules %}
+        <div class="subnet-row" data-subnet-row>
+          <input name="real_subnet" type="text" value="{{ rule.real }}" placeholder="192.168.1.0/28 or 192.168.1.1" autocomplete="off" spellcheck="false" aria-label="Original network">
+          <input name="stand_in" type="text" value="{{ rule.stand_in }}" placeholder="10.20.0.0/28 or 10.50.0.1" autocomplete="off" spellcheck="false" aria-label="Stand-in network">
+          <button type="button" class="ghost subnet-icon" data-subnet-add aria-label="Add subnet">+</button>
+          <button type="button" class="ghost subnet-icon" data-subnet-remove aria-label="Remove subnet">−</button>
+        </div>
+        {% else %}
+        <div class="subnet-row" data-subnet-row>
+          <input name="real_subnet" type="text" placeholder="192.168.1.0/28 or 192.168.1.1" autocomplete="off" spellcheck="false" aria-label="Original network">
+          <input name="stand_in" type="text" placeholder="10.20.0.0/28 or 10.50.0.1" autocomplete="off" spellcheck="false" aria-label="Stand-in network">
+          <button type="button" class="ghost subnet-icon" data-subnet-add aria-label="Add subnet">+</button>
+          <button type="button" class="ghost subnet-icon" data-subnet-remove aria-label="Remove subnet">−</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="submit">Save subnets</button>
+    </form>
 
-  <form method="post" action="/sessions/{{ session.id }}/sanitize" class="panel stack" enctype="multipart/form-data" data-busy>
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <h2>Sanitize a config</h2>
-    <label for="label">Device label</label>
-    <input id="label" name="label" type="text" maxlength="60" placeholder="Cedar ISR" autocomplete="off">
-    <label for="config_file">Configuration file</label>
-    <input id="config_file" name="config_file" type="file" accept=".cfg,.txt,.text,text/plain">
-    <label for="config_text">Or paste <code>show running-config</code></label>
-    <textarea id="config_text" name="config_text" rows="12" spellcheck="false" wrap="off" placeholder="hostname …"></textarea>
-    <button type="submit" data-busy-label="Sanitizing…">Sanitize</button>
-    <p class="hint">Limit 10 MB. Secrets become &lt;REMOVED&gt; and are not stored. RFC 1918 addresses move into 10.0.0.0/8. Other unicast addresses move into 198.18.0.0/15.</p>
-  </form>
-</section>
+    <form method="post" action="/sessions/{{ session.id }}/keywords" class="panel stack" data-busy>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <h2>Keyword list</h2>
+      <p class="hint">Client name, site names, project codes. One per line. Matching is case-insensitive and applies to the next upload. Already-sanitized files stay as they were.</p>
+      <label class="sr-only" for="keywords">Keywords</label>
+      <textarea id="keywords" name="keywords" rows="6" spellcheck="false">{{ keyword_text }}</textarea>
+      <button type="submit" data-busy-label="Saving…">Save keywords</button>
+    </form>
+  </aside>
 
-<section class="panel">
+  <div class="stage">
+    <form method="post" action="/sessions/{{ session.id }}/sanitize" class="panel stack stage-upload" enctype="multipart/form-data" data-busy data-sanitize>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <h2>Sanitize a config</h2>
+      <label for="label">Device label</label>
+      <input id="label" name="label" type="text" maxlength="60" placeholder="Cedar ISR" autocomplete="off">
+      <div class="upload-grid">
+        <div class="stack">
+          <label for="config_file">Configuration files</label>
+          <div class="dropzone" data-dropzone>
+            <input id="config_file" class="dropzone-input" name="config_file" type="file" multiple accept=".cfg,.txt,.text,text/plain">
+            <p class="dropzone-title" data-drop-title>Drop configuration files here, or click to choose</p>
+            <p class="dropzone-hint">One file uses the device label above. Several files are each stored under their filename.</p>
+            <ul class="file-list" data-file-list hidden></ul>
+          </div>
+        </div>
+        <div class="stack">
+          <label for="config_text">Or paste <code>show running-config</code></label>
+          <textarea id="config_text" name="config_text" rows="12" spellcheck="false" wrap="off" placeholder="hostname …"></textarea>
+        </div>
+      </div>
+      <button type="submit" data-busy-label="Sanitizing…">Sanitize</button>
+      <p class="hint">Limit 10 MB. Secrets become &lt;REMOVED&gt; and are not stored. RFC 1918 addresses move into 10.0.0.0/8. Other unicast addresses move into 198.18.0.0/15.</p>
+    </form>
+
+    <section class="panel">
   <h2>Stored configs</h2>
   {% if not configs %}
   <p class="empty-copy">Nothing uploaded yet. The original and the sanitized copy are both kept, encrypted, so you can diff a restore days later.</p>
@@ -73,34 +115,50 @@
     </table>
   </div>
   {% endif %}
-</section>
+    </section>
 
-<section class="panel">
+    <section class="panel">
   <div class="section-head">
-    <h2>Mapping table</h2>
-    <label class="filter">Filter
-      <input id="mapping-filter" type="search" placeholder="HOST, 10.0, DESC…" autocomplete="off">
-    </label>
+    <h2>Mapping tables</h2>
+    {% if mapping_groups %}
+    <div class="mapping-tools">
+      <button type="button" class="mapping-toggle" data-mapping-toggle="open">Expand all</button>
+      <button type="button" class="mapping-toggle" data-mapping-toggle="close">Collapse all</button>
+      <label class="filter">Filter
+        <input id="mapping-filter" type="search" placeholder="HOST, 10.0, DESC…" autocomplete="off">
+      </label>
+    </div>
+    {% endif %}
   </div>
-  {% if not mappings %}
-  <p class="empty-copy">The table fills in as you upload. It is what restore uses, including next week.</p>
+  {% if not mapping_groups %}
+  <p class="empty-copy">Each device gets its own table when you upload it. A later device does not add rows to an earlier one.</p>
   {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Type</th><th>Real value</th><th>Stand-in</th></tr>
-      </thead>
-      <tbody>
-        {% for row in mappings %}
-        <tr data-mapping-row data-search="{{ row.type_label }} {{ row.real }} {{ row.placeholder }}">
-          <td>{{ row.type_label }}</td>
-          <td><code>{{ row.real }}</code></td>
-          <td><code>{{ row.placeholder }}</code></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+  {% for group in mapping_groups %}
+  <details class="mapping-device" data-mapping-group data-device="{{ group.device }}"{% if mapping_groups|length == 1 %} open{% endif %}>
+    <summary>
+      <span class="mapping-title">{{ group.title }}</span>
+      <span class="mapping-count">{{ group.rows|length }} row{% if group.rows|length != 1 %}s{% endif %}</span>
+    </summary>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Real value</th><th>Stand-in</th></tr>
+        </thead>
+        <tbody>
+          {% for row in group.rows %}
+          <tr data-mapping-row data-search="{{ group.title }} {{ row.type_label }} {{ row.real }} {{ row.placeholder }}">
+            <td>{{ row.type_label }}</td>
+            <td><code>{{ row.real }}</code></td>
+            <td><code>{{ row.placeholder }}</code></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
   {% endif %}
-</section>
+    </section>
+  </div>
+</div>
 {% endblock %}

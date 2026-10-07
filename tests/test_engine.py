@@ -427,3 +427,108 @@ def test_ipv4_restore_uses_digit_boundaries():
     assert restore_text(text, mapper) == (
         "dnac-radius_172.21.64.10 other-172.21.64.1 EDGE XHOST-001 DESC-001Y\n"
     )
+
+
+def test_keep_ips_rewrites_only_listed_addresses():
+    mapper = Mapper()
+    mapper.keep_ips = True
+    mapper.note_subnet("192.168.1.0/28", "10.20.0.0/28")
+    mapper.note_host("10.9.9.9", "10.50.0.5")
+    mapper.activate_listed_subnets()
+    sanitized = sanitize_config(
+        "hostname EDGE-A\n"
+        "enable secret 0 SECRETVALUE\n"
+        "interface Vlan1\n"
+        " ip address 192.168.1.1 255.255.255.240\n"
+        "interface Vlan2\n"
+        " ip address 192.168.1.17 255.255.255.240\n"
+        "ip route 10.9.9.9 255.255.255.255 192.168.1.1\n",
+        mapper,
+    )
+    assert "ip address 10.20.0.1 255.255.255.240" in sanitized
+    assert "ip address 192.168.1.17 255.255.255.240" in sanitized
+    assert "ip route 10.50.0.5 255.255.255.255 10.20.0.1" in sanitized
+    assert "10.9.9.9" not in sanitized
+    assert "SECRETVALUE" not in sanitized
+    assert "hostname HOST-001" in sanitized
+    assert all(entry.real != "192.168.1.17" for entry in mapper.new_entries())
+
+
+def test_later_config_reuses_session_subnets_only():
+    first = Mapper()
+    sanitize_config(
+        "hostname EDGE-A\n"
+        "interface Vlan1\n"
+        " ip address 192.168.1.1 255.255.255.240\n"
+        "interface Vlan2\n"
+        " ip address 192.168.1.17 255.255.255.240\n"
+        "interface GigabitEthernet0/0\n"
+        " description Alpha closet\n",
+        first,
+    )
+    second = Mapper()
+    for entry in first.all_entries():
+        if entry.type == "subnet":
+            second.note_subnet(entry.real, entry.placeholder)
+    sanitized = sanitize_config(
+        "hostname EDGE-B\n"
+        "interface Vlan3\n"
+        " ip address 192.168.2.1 255.255.255.0\n"
+        "interface Vlan2\n"
+        " ip address 192.168.1.17 255.255.255.240\n"
+        "interface GigabitEthernet0/0\n"
+        " description Beta closet\n",
+        second,
+    )
+    assert "ip address 10.0.0.17 255.255.255.240" in sanitized
+    assert "ip address 10.0.1.1 255.255.255.0" in sanitized
+    assert "192.168.1." not in sanitized
+    assert "192.168.2." not in sanitized
+    assert any(
+        entry.type == "hostname" and entry.real == "EDGE-B" and entry.placeholder == "HOST-001"
+        for entry in second.new_entries()
+    )
+    assert any(
+        entry.type == "description" and entry.real == "Beta closet" and entry.placeholder == "DESC-001"
+        for entry in second.new_entries()
+    )
+    assert any(
+        entry.type == "subnet" and entry.real == "192.168.1.16/28" and entry.placeholder == "10.0.0.16/28"
+        for entry in second.new_entries()
+    )
+    assert all(entry.real != "192.168.1.0/28" for entry in second.new_entries())
+
+    broader = Mapper()
+    broader.note_subnet("192.168.1.0/28", "10.0.0.0/28")
+    wider = sanitize_config(
+        "interface Vlan1\n ip address 192.168.1.1 255.255.255.0\n",
+        broader,
+    )
+    assert "ip address 10.0.1.1 255.255.255.0" in wider
+
+
+def test_class_and_policy_map_descriptions_stay():
+    text = """\
+class-map match-any system-cpp-police-ewlc-control
+ description EWLC Control
+class-map match-any system-cpp-police-topology-control
+ description Topology control
+policy-map system-cpp-policy
+ class system-cpp-police-ewlc-control
+  description EWLC Control
+interface GigabitEthernet0/0
+ description Cedar users
+!
+"""
+    mapper = Mapper(keywords=["Cedar", "EWLC"])
+    sanitized = sanitize_config(text, mapper)
+    assert "description EWLC Control" in sanitized
+    assert "description Topology control" in sanitized
+    assert "description Cedar users" not in sanitized
+    assert any(entry.type == "description" and entry.real == "Cedar users" for entry in mapper.all_entries())
+    assert all(entry.real not in {"EWLC Control", "Topology control"} for entry in mapper.all_entries())
+    assert "EWLC" not in "".join(entry.real for entry in mapper.all_entries() if entry.type == "description" and entry.real != "Cedar users")
+    restored = restore_text(sanitized, mapper)
+    assert "description EWLC Control" in restored
+    assert "description Topology control" in restored
+    assert "description Cedar users" in restored

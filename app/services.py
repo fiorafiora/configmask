@@ -13,9 +13,12 @@ from app.db import (
     get_session_row,
     load_keywords,
     load_mapper,
+    load_subnet_settings,
     save_mapper_entries,
+    seed_session_subnets,
 )
 from app.engine.allocator import PoolExhausted
+from app.engine.mapper import Mapper
 from app.engine.diffview import build_diff, diff_stats
 from app.engine.registry import UnknownVendor, get_vendor
 from app.engine.restore import restore_text
@@ -98,7 +101,18 @@ def sanitize_upload(
     except UnknownVendor as exc:
         raise ConfigError("missing") from exc
     keywords = load_keywords(vault, row)
-    mapper = load_mapper(settings.db_path, vault, session_id, keywords)
+    mapper = Mapper(keywords=keywords)
+    keep_ips, rules = load_subnet_settings(vault, row)
+    mapper.keep_ips = keep_ips
+    for real, stand_in in rules:
+        if "/" in real:
+            mapper.note_subnet(real, stand_in)
+        else:
+            mapper.note_host(real, stand_in)
+    if mapper.keep_ips:
+        mapper.activate_listed_subnets()
+    else:
+        seed_session_subnets(settings.db_path, vault, session_id, mapper)
     try:
         sanitized = vendor.sanitize(text, mapper)
     except PoolExhausted as exc:
@@ -109,7 +123,6 @@ def sanitize_upload(
             exc.prefix,
         )
         raise ConfigError("pool") from exc
-    added = save_mapper_entries(settings.db_path, vault, session_id, mapper)
     config_id = add_config(
         settings.db_path,
         vault,
@@ -119,6 +132,7 @@ def sanitize_upload(
         original=text,
         sanitized=sanitized,
     )
+    added = save_mapper_entries(settings.db_path, vault, session_id, mapper, config_id)
     log.info(
         "sanitize session=%s job=%s bytes=%s lines=%s new_mappings=%s removed=%s config=%s",
         session_id,
@@ -143,7 +157,10 @@ def build_restore(
     if row is None:
         raise ConfigError("missing")
     keywords = load_keywords(vault, row)
-    mapper = load_mapper(settings.db_path, vault, session_id, keywords)
+    if compare_config_id is None:
+        mapper = Mapper(keywords=keywords)
+    else:
+        mapper = load_mapper(settings.db_path, vault, session_id, keywords, compare_config_id)
     restored = restore_text(edited, mapper)
     restore_id = add_restore(
         settings.db_path,
